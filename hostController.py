@@ -1,5 +1,5 @@
 import zmq
-from MasterId import HiyaMsg, DataMsg, InBuf, MasterId
+from Messages import HiyaMsg, DataMsg, MasterId, Messages
 from SetUpConnections import ClientSetup, ServerSetup
 import time
 
@@ -14,53 +14,44 @@ context = zmq.Context()   # get context
 #clientSetup = ClientSetup(context)  # instantiate the ClientSetup object
 serverSetup = ServerSetup(context) # instantiate the ServerSetup object
 
-# set up for one socket
-"""
-socket = serverSetup.createServerSocket() # get a server socket (using one socket)
-serverSetup.serverBind('deviceControllerPort', socket) # bind to an address (using one socket)
-clientSetup.clientConnect(deviceControllerAddr, deviceControllerPort, socket) # connect to server using one socket
-"""
-
-# set up for using server and client self.socket
-"""
-serverSetup.serverBind(deviceControllerPort) # bind to an address using seld.socket
-clientSetup.clientConnect(deviceControllerAddr, deviceControllerPort) # connect to server using self.socket
-"""
 
 # set up separate server and client sockets
 serverSocket = serverSetup.createServerSocket() # get a server socket
 serverSetup.serverBind(hostControllerPort, serverSocket) # bind to an address
+
 #clientSocket = clientSetup.createClientSocket() # get a client socket
+
+# NOTE: setIdentity() MUST BE CALLED BEFORE clientConnect or the identity will
+# not take effect
+#clientSetup.setIdentity(MasterId().getDevId()) # get the device id
 #clientSetup.clientConnect(hostControllerAddr, hostControllerPort, clientSocket) # connect to server using clientSocket
 
-#clientSetup.setIdentity(MasterId().getDevId()) # get the device id
 
 poller = zmq.Poller()
 poller.register(serverSocket, zmq.POLLIN)
 #poller.register(clientSocket, zmq.POLLIN)
 
 serverCount = 0
-
-print("beginning poll")
+messages = Messages()
+print("Host Controller beginning poll")
 while 1:
     socks = dict(poller.poll(1000))
     if serverSocket in socks and socks[serverSocket] == zmq.POLLIN:
         ident, cmdFrmClient, data = serverSocket.recv_multipart()
-        print("rcvd from client: ident=", ident, "cmd=", cmdFrmClient, "data=", data)
-        dataToClient = ("Hello Client count={}".format(serverCount)).encode()
-        serverCount += 1
-        cmdToClient = "01".encode()
-        serverSocket.send_multipart([ident, cmdToClient, dataToClient])
-        print ("sent to client, ident={}, cmd={}, data={}".format(ident, cmdToClient, dataToClient))
+        print("Rcvd from DeviceController: ident=", ident, "cmd=", cmdFrmClient, "data=", data)
 
+        inDict = messages.bufferToDict(data) # create a list from the message
 
-"""    if clientSocket in socks and socks[clientSocket] == zmq.POLLIN:
-        cmdFrmServer, data = clientSocket.recv_multipart()
-        print("rcvd from server: cmd=", cmdFrmServer, "data=", data)
-        dataToServer = "Hello Server".encode
-        cmdToServer = "02"
-        clientSocket.send_multipart([cmdToServer, dataToServer])
-        print("sent to server, cmd={}, data={}".format(cmdToServer, dataToServer))
-"""
+        print("Internal list, devType={}, cmd={}, data={}, returnList={}\n"
+            .format(inDict['devType'], inDict['cmd'], inDict['data'], inDict['returnList']))
 
+        # For testing purposes, now send the message back down the line
 
+        outIdent = messages.popLastReturnId(inDict).encode() # get the device controller id
+        print("Ident poped from returnId", outIdent)
+        dataToClient = messages.dictToBuffer(inDict).encode() # create a buffer
+        print("Data to Device Controller=", dataToClient)
+        cmdToClient = inDict['cmd'].encode()
+        print("Cmd to Device Controller=", cmdToClient)
+        print("Sending to outIdent =", outIdent)
+        serverSocket.send_multipart([outIdent, cmdToClient, dataToClient])

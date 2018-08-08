@@ -1,7 +1,6 @@
 import zmq
-from MasterId import HiyaMsg, DataMsg, InBuf, MasterId
+from Messages import HiyaMsg, DataMsg, Messages, MasterId
 from SetUpConnections import ClientSetup, ServerSetup
-import secrets  # for creating a test id
 import time
 
 
@@ -15,60 +14,68 @@ context = zmq.Context()   # get context
 clientSetup = ClientSetup(context)  # instantiate the ClientSetup object
 serverSetup = ServerSetup(context) # instantiate the ServerSetup object
 
-# set up for one socket
-"""
-socket = serverSetup.createServerSocket() # get a server socket (using one socket)
-serverSetup.serverBind('deviceControllerPort', socket) # bind to an address (using one socket)
-clientSetup.clientConnect(deviceControllerAddr, deviceControllerPort, socket) # connect to server using one socket
-"""
-
-# set up for using server and client self.socket
-"""
-serverSetup.serverBind(deviceControllerPort) # bind to an address using seld.socket
-clientSetup.clientConnect(deviceControllerAddr, deviceControllerPort) # connect to server using self.socket
-"""
 
 # set up separate server and client sockets
 serverSocket = serverSetup.createServerSocket() # get a server socket
 serverSetup.serverBind(deviceControllerPort, serverSocket) # bind to an address
 clientSocket = clientSetup.createClientSocket() # get a client socket
+
+# NOTE: setIdentity() MUST BE CALLED BEFORE clientConnect or the identity will
+# not take effect
+clientSetup.setIdentity(MasterId().getDevId(), clientSocket) # get the device id
 clientSetup.clientConnect(hostControllerAddr, hostControllerPort, clientSocket) # connect to server using clientSocket
 
-clientSetup.setIdentity(MasterId().getDevId()) # get the device id
 
 poller = zmq.Poller()
 poller.register(serverSocket, zmq.POLLIN)
 poller.register(clientSocket, zmq.POLLIN)
 
-print("send a message to HostController server")
-dataToServer = "Hey there HostController Server".encode()
-cmdToServer = "02".encode()
-clientSocket.send_multipart([cmdToServer, dataToServer])
-print("sent to server, cmd={}, data={}".format(cmdToServer, dataToServer))
+#print("send a message to HostController server")
+#dataToServer = "Hey there HostController Server".encode()
+#cmdToServer = "02".encode()
+#clientSocket.send_multipart([cmdToServer, dataToServer])
+#print("sent to server, cmd={}, data={}".format(cmdToServer, dataToServer))
+
+messages = Messages() # instantiate a Messages object
 
 print("beginning poll")
 clientCount = 0
 serverCount = 0
+inDict = {}
 while 1:
     socks = dict(poller.poll(1000))
     if serverSocket in socks and socks[serverSocket] == zmq.POLLIN:
         ident, cmdFrmClient, data = serverSocket.recv_multipart()
-        print("rcvd from client: ident=", ident, "cmd=", cmdFrmClient, "data=", data)
-        dataToClient = ("Hello Client count={}".format(clientCount)).encode()
-        clientCount += 1
-        cmdToClient = "01".encode()
-        print("type of ident=",type(ident))
 
-        serverSocket.send_multipart([ident, cmdToClient, dataToClient])
-        print ("sent to client, ident={}, cmd={}, data={}".format(ident, cmdToClient, dataToClient))
+        print("Message received from device: ident=", ident,"cmd=", cmdFrmClient, "data=", data)
+
+        inDict = messages.bufferToDict(data) # create a list from the message
+
+        print("Internal list, devType={}, cmd={}, data={}, returnList={}\n"
+            .format(inDict['devType'], inDict['cmd'], inDict['data'], inDict['returnList']))
+
+       #For testing purposes only, relay the message upstream
+
+        messages.appendMyIdToReturnList(inDict)
+        print("Sending this dictionary to HostController:", inDict)
+        dataToServer = messages.dictToBuffer(inDict).encode()
+        print('Sending this output message:', dataToServer)
+        clientSocket.send_multipart([cmdFrmClient, dataToServer])
+        print ("Sent to HostController, ident={}, cmd={}, data={}\n".format(ident, cmdFrmClient, dataToServer))
 
     if clientSocket in socks and socks[clientSocket] == zmq.POLLIN:
         cmdFrmServer, data = clientSocket.recv_multipart()
-        print("rcvd from server: cmd=", cmdFrmServer, "data=", data)
-        dataToServer = ("Hello Server count={}".format(serverCount)).encode()
-        serverCount += 1
-        cmdToServer = "02".encode()
-        clientSocket.send_multipart([cmdToServer, dataToServer])
-        print("sent to server, cmd={}, data={}".format(cmdToServer, dataToServer))
+        print("Received from HostController: cmd=", cmdFrmServer, "data=", data)
+        inDict = messages.bufferToDict(data) # create a list from the message
+        print("inDict=\n", inDict)
 
-    time.sleep(1)
+        # For testing purposes, send the message back to the device
+
+        outIdent = (messages.popLastReturnId(inDict)).encode() # get the device controller id
+        dataToClient = (messages.dictToBuffer(inDict)).encode()
+        cmdToClient = (inDict['cmd']).encode()
+        print("Sending to device with cmd={}, data={} \n".format(cmdToClient, dataToClient))
+        serverSocket.send_multipart([outIdent, cmdToClient, dataToClient])
+
+
+#    time.sleep(1)
