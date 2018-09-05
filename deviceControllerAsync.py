@@ -1,8 +1,7 @@
 import zmq
-from zmq.eventloop.ioloop import IOLoop, PeriodicCallback
-from zmq.eventloop.zmqstream import ZMQStream
+#from zmq.eventloop.ioloop import IOLoop, PeriodicCallback
+#from zmq.eventloop.zmqstream import ZMQStream
 import asyncio
-
 from Messages import HiyaMsg, DataMsg, Messages, MasterId
 from SetUpConnections import ClientSetup, ServerSetup
 import time
@@ -19,8 +18,6 @@ class DeviceController:
 
         self.context = zmq.Context()   # get context
 
-        self.loop = IOLoop.instance()
-
         self.clientSetup = ClientSetup(self.context)  # instantiate the ClientSetup object
         self.serverSetup = ServerSetup(self.context) # instantiate the ServerSetup object
 
@@ -36,20 +33,27 @@ class DeviceController:
         self.clientSetup.clientConnect(hostControllerAddr, hostControllerPort, self.clientSocket) # connect to server using clientSocket
         self.messages = Messages() # instantiate a Messages object
 
-        self.serverSocket = ZMQStream(self.serverSocket)
-        self.clientSocket = ZMQStream(self.clientSocket)
+#        self.serverSocket = ZMQStream(self.serverSocket)
+#        self.clientSocket = ZMQStream(self.clientSocket)
 
-        self.serverSocket.on_recv(self.onServerRecv)
-        self.clientSocket.on_recv(self.onClientRecv)
+#        self.serverSocket.on_recv(self.onServerRecv)
+#        self.clientSocket.on_recv(self.onClientRecv)
 
         self.inDict = {}
 
     # Receive from Host Controller
-    def onClientRecv(self,msg):
-        print("onClientRecv() msg=", msg)
-        print("length of msg=", len(msg))
-        cmdFrmHostController = msg[0]
-        data = msg[1]
+    async def onClientRecv(self):
+        clientMsg = []
+        print("1.onClientRecv")
+        await asyncio.sleep(.01)
+        def clientRecv():
+            nonlocal clientMsg
+            clientMsg = self.clientSocket.recv_multipart()
+        await clientRecv()
+        print("onClientRecv() msg=", clientMsg)
+        print("length of msg=", len(clientMsg))
+        cmdFrmHostController = clientMsg[0]
+        data = clientMsg[1]
         print("Message received from host controller: cmd=", cmdFrmHostController, "data=", data)
 
         # Create a dictionary from the Json msg from Host Controller
@@ -65,13 +69,30 @@ class DeviceController:
         print("Sending to device with cmd={}, data={} \n".format(cmdToClient, dataToClient))
         self.serverSocket.send_multipart([self.outIdent, cmdToClient, dataToClient])
 
+
     # Receive from Device
-    def onServerRecv(self,msg):
-        print("onServerRecv msg=", msg)
-        print("length of msg=", len(msg))
-        ident = msg[0]
-        cmdFrmDevice = msg[1]
-        data = msg[2]
+
+    async def onServerRecv(self):
+        print("1.onServerRecv")
+#        await asyncio.sleep(.01)
+
+#        serverMsg = self.serverSocket.recv_multipart()
+        serverMsg = []
+        part = await self.serverSocket.recv()
+        serverMsg.append(part)
+        print("onServerRecv, part=", part)
+        # have first part already, only loop while more to receive
+        while self.serverSocket.getsockopt(zmq.RCVMORE):
+            part = self.serverSocket.recv()
+            self.serverMsg.append(part)
+
+
+
+        print("onServerRecv msg=", serverMsg)
+        print("length of msg=", len(serverMsg))
+        ident = serverMsg[0]
+        cmdFrmDevice = serverMsg[1]
+        data = serverMsg[2]
         # Create a dictionary from the incoming msg from Device
         self.inDict = self.messages.bufferToDict(data) # create a list from the message
 
@@ -79,8 +100,6 @@ class DeviceController:
             .format(self.inDict['devType'], self.inDict['cmd'], self.inDict['data'], self.inDict['returnList']))
 
         print("Message received from device: ident=", ident,"cmd=", cmdFrmDevice, "data=", data)
-        self.processEvent(cmdFrmDevice, self.indict)
-        
         #For testing purposes only, relay the message upstream
 
         self.messages.appendMyIdToReturnList(self.inDict)
@@ -90,21 +109,23 @@ class DeviceController:
         self.clientSocket.send_multipart([cmdFrmDevice, self.dataToServer])
         print ("Sent to HostController, ident={}, cmd={}, data={}\n".format(ident, cmdFrmDevice,  self.dataToServer))
 
-    def processEvent(self, cmd, dict):
-        print("processEvent cmd={}, dict={}".format(cmd,dict))
 
-    def start(self):
-#        self.periodic.start()
-        try:
-        	self.loop.start()
-
-        except KeyboardInterrupt:
-        	pass
-
+    async def start(self):
+        while 1:
+            pass
 
 def main():
-	my_server = DeviceController()
-	my_server.start()
+    my_server = DeviceController()
+    loop = asyncio.get_event_loop()
+    try:
+        asyncio.ensure_future(my_server.onServerRecv())
+        asyncio.ensure_future(my_server.onClientRecv())
+        loop.run_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print("Closing Loop")
+        loop.close()
 
 if __name__ == '__main__':
 	main()
